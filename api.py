@@ -44,19 +44,38 @@ def detect_script_simple(text):
     return 'en' # Default fallback
 
 # ---- SMALL TALK ----
-def is_small_talk(text):
-    """Enhanced small talk detection."""
-    smalltalk_keywords = ['hello', 'hi', 'hey', 'thanks', 'bye', 'namaste', 'dhanyavaad', 'vandanam', 'shukriya']
-    tl = text.lower()
-    return any(p in tl for p in smalltalk_keywords)
+def is_small_talk(text, chat_history):
+    """
+    Enhanced small talk detection. 
+    It only detects small talk if the message is very short/simple 
+    AND if the history is empty (for initial greeting) or if it's explicitly 'thanks'/'bye'.
+    """
+    tl = text.lower().strip()
+    
+    # Explicitly handle Thanks/Bye, regardless of history
+    if "thank" in tl or "dhanyavaad" in tl or "shukriya" in tl or "bye" in tl or "alvida" in tl:
+        return True
+
+    # If history is NOT empty, we don't want to greet again on simple questions.
+    if chat_history:
+        return False
+
+    # Check for simple greetings only if it's the very first message
+    greeting_keywords = ['hello', 'hi', 'hey', 'namaste', 'vandanam', 'namaskar']
+    if any(p == tl for p in greeting_keywords) or any(p in tl and len(tl) < 10 for p in greeting_keywords):
+        return True
+    
+    return False
+
 
 def get_small_talk_response(text, lang):
     """Provides a tailored small talk response."""
+    # Updated 'greet' message to focus on Sujhaa and PM-AJAY
     responses = {
-        'hi': {"greet": "नमस्ते! मैं AAROH हूं। मैं PM-AJAY योजना पर आपकी मदद कर सकता हूँ।", "thanks": "आपका स्वागत है!", "bye": "नमस्ते! अलविदा।"},
-        'ta': {"greet": "வணக்கம்! நான் AAROH. PM-AJAY திட்டத்தைப் பற்றி உங்களுக்கு உதவ முடியும்.", "thanks": "வரவேற்கிறேன்!", "bye": "நன்றி! போய் வருகிறேன்."},
-        'gu': {"greet": "નમસ્કાર! હું AAROH છું. હું PM-AJAY યોજના પર તમારી મદદ કરી શકું છું.", "thanks": "તમારું સ્વાગત છે!", "bye": "આવજો!"},
-        'en': {"greet": "Hello! I'm AAROH. I can assist you with the PM-AJAY scheme.", "thanks": "You're welcome!", "bye": "Goodbye!"}
+        'hi': {"greet": "नमस्ते! मैं **AAROH** हूँ, **Sujhaa** का PM-AJAY सहायक। मैं विशेष रूप से **Grant-in-Aid** और योजना की जानकारी में आपकी मदद कर सकता हूँ।", "thanks": "आपका स्वागत है!", "bye": "नमस्ते! अलविदा।"},
+        'ta': {"greet": "வணக்கம்! நான் **AAROH**, **Sujhaa**-இன் PM-AJAY உதவியாளர். **Grant-in-Aid** மற்றும் திட்டம் பற்றிய தகவல்களுக்கு நான் உங்களுக்கு உதவ முடியும்.", "thanks": "வரவேற்கிறேன்!", "bye": "நன்றி! போய் வருகிறேன்."},
+        'gu': {"greet": "નમસ્કાર! હું **AAROH** છું, **Sujhaa** નો PM-AJAY સહાયક. હું ખાસ કરીને **Grant-in-Aid** અને યોજનાની માહિતીમાં તમારી મદદ કરી શકું છું.", "thanks": "તમારું સ્વાગત છે!", "bye": "આવજો!"},
+        'en': {"greet": "Hello! I'm **AAROH**, the PM-AJAY assistant for **Sujhaa**. I can primarily assist you with **Grant-in-Aid (GIA)** and other scheme details.", "thanks": "You're welcome!", "bye": "Goodbye!"}
     }
     lang_res = responses.get(lang, responses["en"])
     tl = text.lower()
@@ -122,23 +141,18 @@ def build_prompt(user_query, chat_history, target_lang):
     language_name = SUPPORTED_LANGUAGES.get(target_lang, 'English')
 
     return f"""
-You are AAROH, a professional, concise, and friendly AI assistant specifically designed for the **PM-AJAY (Pradhan Mantri Anusuchit Jaati Abhyuday Yojana)** scheme, which focuses on the welfare of Scheduled Caste (SC) communities in India.
+You are AAROH, a professional, concise, and friendly AI assistant for **Sujhaa**, specifically designed for the **PM-AJAY (Pradhan Mantri Anusuchit Jaati Abhyuday Yojana)** scheme. Your primary focus is to provide detailed information on the **Grant-in-Aid (GIA)** component.
 
 **CRITICAL INSTRUCTIONS:**
 1.  **Response Language:** You MUST respond ONLY in **{language_name}** (Target Language).
-2.  **Conciseness:** Provide short, clear, and direct answers. **Do not give long paragraphs.**
+2.  **Conciseness & Tone:** Provide short, clear, and direct answers. **Do not give long paragraphs.** Maintain a helpful and official tone.
 3.  **Formatting:** Structure information using **Markdown Bullet Points (`*`)** and **Bold Keywords (`**keyword**`)** for better readability. Avoid surrounding the entire response or scheme names with quotes.
 4.  **Domain Focus:** ONLY answer questions related to **PM-AJAY** or general **SC welfare**. If the user asks for non-related information, politely state that you can only help with PM-AJAY.
-5.  **Hinglish/Input Language:** If the user inputs text in Hinglish (e.g., "pm ajay kya hai"), process the query but respond strictly in the Target Language (**{language_name}**).
+5.  **GIA Focus:** When discussing PM-AJAY, always emphasize and prioritize the **Grant-in-Aid (GIA)** component as a key area of focus for AAROH/Sujhaa.
+6.  **Hinglish/Input Language:** If the user inputs text in Hinglish (e.g., "pm ajay kya hai"), process the query but respond strictly in the Target Language (**{language_name}**).
 
 **PM-AJAY Key Components (Use these in your answers):**
-* **Education & Scholarships** (Pre/Post Matric, Higher Education)
-* **Skill Development & Livelihood Training** (Vocational courses, Job-oriented skills)
-* **Entrepreneurship & Income Generation** (Support for starting small businesses/SHGs)
-* **Housing & Infrastructure Support** (Residential facilities, basic infrastructure in SC villages)
-* **Health, Nutrition & Social Justice** (Health programs, rights awareness)
-* **Digital Empowerment** (Computer literacy, Digital Payment awareness)
-* **Grant-in-Aid (GIA)** (Financial support to NGOs/Local Bodies for SC community projects)
+* **Education & Scholarships** * **Skill Development & Livelihood Training** * **Entrepreneurship & Income Generation** * **Housing & Infrastructure Support** * **Health, Nutrition & Social Justice** * **Digital Empowerment** * **Grant-in-Aid (GIA):** **(This is AAROH's MAIN FOCUS)** Financial support to NGOs/Local Bodies for SC community projects, including infrastructure and scheme awareness.
 
 Conversation History (For context, max 10 turns):
 {chat_history}
@@ -167,18 +181,11 @@ async def chat(req: ChatRequest):
 
     user_query = req.message
     target_lang = req.target_language.lower() # Enforce lowercase
-
-    # 1. Voice-to-Text Conversion (if needed) - Currently not used in React, but logic kept
-    if req.is_voice:
-        # Assuming req.message contains the audio data in this case, 
-        # which is a common pattern for voice APIs. Adjust if your frontend sends it differently.
-        user_query = speech_to_text(user_query, target_lang)
-        if not user_query:
-            error_msg = {"en": "Sorry, I could not understand your voice. Please try again.", "hi": "क्षमा करें, मैं आपकी आवाज़ समझ नहीं पाया। कृपया पुनः प्रयास करें।"}
-            return {"text": error_msg.get(target_lang, error_msg["en"]), "language": target_lang}
     
-    # 2. Small Talk Handling
-    if is_small_talk(user_query):
+    # 1. Voice-to-Text Conversion (if needed) - Removed for simplicity in this file
+
+    # 2. Small Talk Handling (FIXED: Added chat_history check)
+    if is_small_talk(user_query, req.chat_history):
         resp = get_small_talk_response(user_query, target_lang)
         audio = text_to_speech(resp, target_lang) if req.wants_audio else None
         return {
@@ -201,13 +208,13 @@ async def chat(req: ChatRequest):
         ai_resp = model.generate_content(prompt).text
     except Exception as e:
         print(f"AI Generation Error: {e}")
-        ai_resp = SUPPORTED_LANGUAGES.get(target_lang, 'en')
+        # Error messages in target language
         if target_lang == 'hi':
             ai_resp = "क्षमा करें, मैं अभी आपकी मदद नहीं कर सकता। कृपया कुछ देर बाद कोशिश करें।"
         elif target_lang == 'ta':
             ai_resp = "மன்னிக்கவும், இப்போதைக்கு என்னால் உங்களுக்கு உதவ முடியவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்."
         elif target_lang == 'gu':
-            ai_resp = "માફ કરશો, હું અત્યારે તમારી મદદ કરી શકતો નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો."
+            ai_resp = "માફ કરશો, હું અત્યારે તમારી મદદ કરી શકતો નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો।"
         else:
             ai_resp = "Sorry, I cannot assist you at the moment. Please try again later."
 
