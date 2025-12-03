@@ -1,12 +1,9 @@
 fastapi
 uvicorn
+python-multipart
 langdetect
-python-dotenv
-google-generativeai
-pinecone-client
-pydantic
 gtts
 SpeechRecognition
-pydub
-aiofiles
-requests
+pydantic
+google-generativeai
+python-dotenv

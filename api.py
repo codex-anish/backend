@@ -114,6 +114,8 @@ def speech_to_text(audio_bytes):
 
 # ---- AI PROMPT (UNCHANGED) ----
 def build_prompt(user_query, chat_history, lang):
+    """Improved PM-AJAY focused prompt (same as Streamlit version)"""
+
     LANGUAGE_NAMES = {
         'hi': "Hindi (Devanagari)",
         'or': "Odia",
@@ -122,22 +124,53 @@ def build_prompt(user_query, chat_history, lang):
         'te': "Telugu",
         'en': "English"
     }
-    lang_map = {
-        "hi": "Respond in Hindi (Devanagari script).",
-        "or": "Respond in Odia.",
-        "en": "Respond in English."
+
+    language_instructions = {
+        'hi': "Respond in Hindi (Devanagari script).",
+        'or': "Respond in Odia (Odia script) if possible, otherwise Hindi.",
+        'bn': "Respond in Bengali (Bengali script).",
+        'ta': "Respond in Tamil (Tamil script).",
+        'te': "Respond in Telugu (Telugu script).",
+        'en': "Respond in English."
     }
+
+    lang_instruction = language_instructions.get(
+        lang,
+        f"Respond in {LANGUAGE_NAMES.get(lang, 'the same language')}."
+    )
+
     return f"""
-You are AAROH, an AI assistant SPECIFICALLY for PM-AJAY...
+You are AAROH, an AI assistant specifically designed for PM-AJAY (Pradhan Mantri Anusuchit Jaati Abhyuday Yojana) — 
+a national programme for Scheduled Caste development.
 
-{lang_map.get(lang, 'Respond in English.')}
+{lang_instruction}
 
-Previous Conversation:
+Conversation History:
 {chat_history}
 
-User's Question: {user_query}
+CRITICAL RULES:
 
-Provide answer in {LANGUAGE_NAMES.get(lang, 'same language')}:
+• You ONLY answer questions related to PM-AJAY or Scheduled Caste welfare.
+• If user asks anything outside PM-AJAY → politely say you can only help with PM-AJAY related topics.
+• Be simple, friendly, accurate, and avoid long paragraphs.
+• Ask **one question at a time** if eligibility assessment is needed.
+• Never generate false information. Give government-style answers.
+• If uncertain → suggest contacting local SC Welfare Office.
+
+PM-AJAY Key Components:
+1. Education & Scholarships  
+2. Skill Development & Livelihood Training  
+3. Entrepreneurship & Income Generation  
+4. Housing & Infrastructure Support  
+5. Health, Nutrition & Social Justice  
+6. Digital Empowerment  
+7. Grant-in-Aid (GIA) for community development projects  
+
+Target Beneficiaries: Scheduled Caste individuals & communities.
+
+User Question: {user_query}
+
+Now give a clear, correct and helpful answer in {LANGUAGE_NAMES.get(lang, lang)}:
 """
 
 
