@@ -1,14 +1,14 @@
+import os
+from io import BytesIO
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
-import os
-from dotenv import load_dotenv
-from langdetect import detect
-from io import BytesIO
 from gtts import gTTS
-import speech_recognition as sr
 import tempfile
+import speech_recognition as sr
+import re
 
 load_dotenv()
 
@@ -22,155 +22,130 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-LANGUAGE_NAMES = {
-    'en': 'English', 'hi': 'Hindi', 'bn': 'Bengali', 'te': 'Telugu',
-    'mr': 'Marathi', 'ta': 'Tamil', 'gu': 'Gujarati', 'kn': 'Kannada',
-    'ml': 'Malayalam', 'pa': 'Punjabi', 'ur': 'Urdu', 'or': 'Odia', 'as': 'Assamese'
+# Supported Languages for the Chatbot
+SUPPORTED_LANGUAGES = {
+    'en': 'English',
+    'hi': 'Hindi',
+    'ta': 'Tamil',
+    'gu': 'Gujarati',
 }
 
-# ---- LANGUAGE DETECTION ----
-def detect_script(text):
-    ranges = [
-        ('hi', '\u0900', '\u097F'),
-        ('or', '\u0B00', '\u0B7F'),
-        ('bn', '\u0980', '\u09FF'),
-        ('ta', '\u0B80', '\u0BFF'),
-        ('te', '\u0C00', '\u0C7F'),
-        ('gu', '\u0A80', '\u0AFF'),
-        ('kn', '\u0C80', '\u0CFF'),
-        ('ml', '\u0D00', '\u0D7F'),
-        ('pa', '\u0A00', '\u0A7F'),
-    ]
-    for lang, start, end in ranges:
-        if any(start <= c <= end for c in text):
-            return lang
-    return None
-
-def detect_language_enhanced(text):
-    s = detect_script(text)
-    if s: return s
-    try:
-        d = detect(text)
-        if d == 'sw' and detect_script(text): return 'hi'
-        return d
-    except:
-        return 'en'
+# ---- LANGUAGE DETECTION (Simplified/Targeted for Indian Languages) ----
+def detect_script_simple(text):
+    """Detects script for Indian languages, defaulting to 'en'."""
+    # Devanagari (Hindi)
+    if any('\u0900' <= c <= '\u097F' for c in text): return 'hi'
+    # Tamil
+    if any('\u0B80' <= c <= '\u0BFF' for c in text): return 'ta'
+    # Gujarati
+    if any('\u0A80' <= c <= '\u0AFF' for c in text): return 'gu'
+    # Simple check for English characters
+    if any('a' <= c.lower() <= 'z' for c in text): return 'en'
+    return 'en' # Default fallback
 
 # ---- SMALL TALK ----
 def is_small_talk(text):
-    smalltalk = {
-        'en': ['hello', 'hi', 'hey', 'thanks', 'bye'],
-        'hi': ['namaste', 'dhanyavaad'],
-        'or': ['namaskar', 'dhanyabad']
-    }
+    """Enhanced small talk detection."""
+    smalltalk_keywords = ['hello', 'hi', 'hey', 'thanks', 'bye', 'namaste', 'dhanyavaad', 'vandanam', 'shukriya']
     tl = text.lower()
-    for phrases in smalltalk.values():
-        if any(p == tl or p in tl for p in phrases):
-            return True
-    return False
+    return any(p in tl for p in smalltalk_keywords)
 
 def get_small_talk_response(text, lang):
+    """Provides a tailored small talk response."""
     responses = {
-        'hi': {"greet": "नमस्ते! मैं AAROH हूं।", "thanks": "आपका स्वागत है!", "bye": "नमस्ते!"},
-        'or': {"greet": "ନମସ୍କାର! ମୁଁ AAROH ।", "thanks": "ସ୍ୱାଗତ!", "bye": "ନମସ୍କାର!"},
-        'en': {"greet": "Hello! I'm AAROH.", "thanks": "You're welcome!", "bye": "Goodbye!"}
+        'hi': {"greet": "नमस्ते! मैं AAROH हूं। मैं PM-AJAY योजना पर आपकी मदद कर सकता हूँ।", "thanks": "आपका स्वागत है!", "bye": "नमस्ते! अलविदा।"},
+        'ta': {"greet": "வணக்கம்! நான் AAROH. PM-AJAY திட்டத்தைப் பற்றி உங்களுக்கு உதவ முடியும்.", "thanks": "வரவேற்கிறேன்!", "bye": "நன்றி! போய் வருகிறேன்."},
+        'gu': {"greet": "નમસ્કાર! હું AAROH છું. હું PM-AJAY યોજના પર તમારી મદદ કરી શકું છું.", "thanks": "તમારું સ્વાગત છે!", "bye": "આવજો!"},
+        'en': {"greet": "Hello! I'm AAROH. I can assist you with the PM-AJAY scheme.", "thanks": "You're welcome!", "bye": "Goodbye!"}
     }
     lang_res = responses.get(lang, responses["en"])
     tl = text.lower()
-    if "thank" in tl: return lang_res["thanks"]
-    if "bye" in tl: return lang_res["bye"]
+    if "thank" in tl or "dhanyavaad" in tl or "shukriya" in tl: return lang_res["thanks"]
+    if "bye" in tl or "alvida" in tl or "avjo" in tl: return lang_res["bye"]
     return lang_res["greet"]
 
 # ---- AUDIO OUT ----
 def text_to_speech(text, lang):
+    """Converts text to speech bytes."""
     try:
-        lang_map = {
-            'hi': 'hi', 'or': 'or', 'en': 'en', 'bn': 'bn', 'ta': 'ta',
-            'te': 'te', 'mr': 'mr', 'gu': 'gu', 'kn': 'kn', 'ml': 'ml'
-        }
-        tts = gTTS(text=text, lang=lang_map.get(lang, 'en'))
+        # gTTS uses standard ISO 639-1 codes
+        lang_map = {'hi': 'hi', 'ta': 'ta', 'gu': 'gu', 'en': 'en'}
+        tts_lang = lang_map.get(lang, 'en')
+        
+        # Remove markdown before TTS to prevent gTTS reading '*' or '**'
+        clean_text = re.sub(r'[\*\#]', '', text) 
+
+        tts = gTTS(text=clean_text, lang=tts_lang)
         buf = BytesIO()
         tts.write_to_fp(buf)
         buf.seek(0)
         return buf.read()
-    except:
+    except Exception as e:
+        print(f"TTS Error: {e}")
         return None
 
 # ---- AUDIO IN ----
-def speech_to_text(audio_bytes):
+def speech_to_text(audio_bytes, target_lang):
+    """Converts speech bytes to text using target language hint."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
         f.write(audio_bytes)
         path = f.name
 
     rec = sr.Recognizer()
-    with sr.AudioFile(path) as src:
-        audio = rec.record(src)
-
     try:
-        text = rec.recognize_google(audio, language="hi-IN")
+        with sr.AudioFile(path) as src:
+            audio = rec.record(src)
+        
+        # Mapping for Google Speech Recognition
+        sr_lang_map = {
+            'hi': 'hi-IN', 
+            'ta': 'ta-IN', 
+            'gu': 'gu-IN', 
+            'en': 'en-US'
+        }
+        sr_lang = sr_lang_map.get(target_lang, 'en-US')
+
+        text = rec.recognize_google(audio, language=sr_lang)
+        os.unlink(path) # Clean up temp file
         return text
-    except:
+    except Exception as e:
+        print(f"STT Error: {e}")
+        os.unlink(path)
         return None
 
-# ---- AI PROMPT (UNCHANGED) ----
-def build_prompt(user_query, chat_history, lang):
-    """Improved PM-AJAY focused prompt (same as Streamlit version)"""
+# ---- AI PROMPT (Trained like a Pro) ----
+def build_prompt(user_query, chat_history, target_lang):
+    """
+    Improved PM-AJAY focused prompt with strict formatting and language control.
+    """
 
-    LANGUAGE_NAMES = {
-        'hi': "Hindi (Devanagari)",
-        'or': "Odia",
-        'bn': "Bengali",
-        'ta': "Tamil",
-        'te': "Telugu",
-        'en': "English"
-    }
-
-    language_instructions = {
-        'hi': "Respond in Hindi (Devanagari script).",
-        'or': "Respond in Odia (Odia script) if possible, otherwise Hindi.",
-        'bn': "Respond in Bengali (Bengali script).",
-        'ta': "Respond in Tamil (Tamil script).",
-        'te': "Respond in Telugu (Telugu script).",
-        'en': "Respond in English."
-    }
-
-    lang_instruction = language_instructions.get(
-        lang,
-        f"Respond in {LANGUAGE_NAMES.get(lang, 'the same language')}."
-    )
+    language_name = SUPPORTED_LANGUAGES.get(target_lang, 'English')
 
     return f"""
-You are AAROH, an AI assistant specifically designed for PM-AJAY (Pradhan Mantri Anusuchit Jaati Abhyuday Yojana) — 
-a national programme for Scheduled Caste development.
+You are AAROH, a professional, concise, and friendly AI assistant specifically designed for the **PM-AJAY (Pradhan Mantri Anusuchit Jaati Abhyuday Yojana)** scheme, which focuses on the welfare of Scheduled Caste (SC) communities in India.
 
-{lang_instruction}
+**CRITICAL INSTRUCTIONS:**
+1.  **Response Language:** You MUST respond ONLY in **{language_name}** (Target Language).
+2.  **Conciseness:** Provide short, clear, and direct answers. **Do not give long paragraphs.**
+3.  **Formatting:** Structure information using **Markdown Bullet Points (`*`)** and **Bold Keywords (`**keyword**`)** for better readability. Avoid surrounding the entire response or scheme names with quotes.
+4.  **Domain Focus:** ONLY answer questions related to **PM-AJAY** or general **SC welfare**. If the user asks for non-related information, politely state that you can only help with PM-AJAY.
+5.  **Hinglish/Input Language:** If the user inputs text in Hinglish (e.g., "pm ajay kya hai"), process the query but respond strictly in the Target Language (**{language_name}**).
 
-Conversation History:
+**PM-AJAY Key Components (Use these in your answers):**
+* **Education & Scholarships** (Pre/Post Matric, Higher Education)
+* **Skill Development & Livelihood Training** (Vocational courses, Job-oriented skills)
+* **Entrepreneurship & Income Generation** (Support for starting small businesses/SHGs)
+* **Housing & Infrastructure Support** (Residential facilities, basic infrastructure in SC villages)
+* **Health, Nutrition & Social Justice** (Health programs, rights awareness)
+* **Digital Empowerment** (Computer literacy, Digital Payment awareness)
+* **Grant-in-Aid (GIA)** (Financial support to NGOs/Local Bodies for SC community projects)
+
+Conversation History (For context, max 10 turns):
 {chat_history}
-
-CRITICAL RULES:
-
-• You ONLY answer questions related to PM-AJAY or Scheduled Caste welfare.
-• If user asks anything outside PM-AJAY → politely say you can only help with PM-AJAY related topics.
-• Be simple, friendly, accurate, and avoid long paragraphs.
-• Ask **one question at a time** if eligibility assessment is needed.
-• Never generate false information. Give government-style answers.
-• If uncertain → suggest contacting local SC Welfare Office.
-
-PM-AJAY Key Components:
-1. Education & Scholarships  
-2. Skill Development & Livelihood Training  
-3. Entrepreneurship & Income Generation  
-4. Housing & Infrastructure Support  
-5. Health, Nutrition & Social Justice  
-6. Digital Empowerment  
-7. Grant-in-Aid (GIA) for community development projects  
-
-Target Beneficiaries: Scheduled Caste individuals & communities.
 
 User Question: {user_query}
 
-Now give a clear, correct and helpful answer in {LANGUAGE_NAMES.get(lang, lang)}:
+Now, provide a helpful and precise answer strictly following all CRITICAL INSTRUCTIONS in **{language_name}**:
 """
 
 
@@ -181,6 +156,7 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 # ========= MAIN API ============
 class ChatRequest(BaseModel):
     message: str
+    target_language: str # New field for chosen language (en, hi, ta, gu)
     chat_history: list = []
     wants_audio: bool = False
     is_voice: bool = False
@@ -190,32 +166,57 @@ class ChatRequest(BaseModel):
 async def chat(req: ChatRequest):
 
     user_query = req.message
-    lang = detect_language_enhanced(user_query)
+    target_lang = req.target_language.lower() # Enforce lowercase
 
-    # Small Talk
+    # 1. Voice-to-Text Conversion (if needed) - Currently not used in React, but logic kept
+    if req.is_voice:
+        # Assuming req.message contains the audio data in this case, 
+        # which is a common pattern for voice APIs. Adjust if your frontend sends it differently.
+        user_query = speech_to_text(user_query, target_lang)
+        if not user_query:
+            error_msg = {"en": "Sorry, I could not understand your voice. Please try again.", "hi": "क्षमा करें, मैं आपकी आवाज़ समझ नहीं पाया। कृपया पुनः प्रयास करें।"}
+            return {"text": error_msg.get(target_lang, error_msg["en"]), "language": target_lang}
+    
+    # 2. Small Talk Handling
     if is_small_talk(user_query):
-        resp = get_small_talk_response(user_query, lang)
-        audio = text_to_speech(resp, lang) if req.wants_audio else None
+        resp = get_small_talk_response(user_query, target_lang)
+        audio = text_to_speech(resp, target_lang) if req.wants_audio else None
         return {
             "text": resp,
-            "language": lang,
+            "language": target_lang,
             "tts_audio": audio
         }
 
-    # Build prompt
+    # 3. Build prompt
     history_text = ""
     for m in req.chat_history[-10:]:
         role = "User" if m["role"] == "user" else "Assistant"
-        history_text += f"{role}: {m['content']}\n"
+        # Only add content, the model will handle language based on the target_lang
+        history_text += f"{role}: {m['content']}\n" 
 
-    prompt = build_prompt(user_query, history_text, lang)
+    prompt = build_prompt(user_query, history_text, target_lang)
 
-    ai_resp = model.generate_content(prompt).text
+    try:
+        # 4. Generate AI Response
+        ai_resp = model.generate_content(prompt).text
+    except Exception as e:
+        print(f"AI Generation Error: {e}")
+        ai_resp = SUPPORTED_LANGUAGES.get(target_lang, 'en')
+        if target_lang == 'hi':
+            ai_resp = "क्षमा करें, मैं अभी आपकी मदद नहीं कर सकता। कृपया कुछ देर बाद कोशिश करें।"
+        elif target_lang == 'ta':
+            ai_resp = "மன்னிக்கவும், இப்போதைக்கு என்னால் உங்களுக்கு உதவ முடியவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்."
+        elif target_lang == 'gu':
+            ai_resp = "માફ કરશો, હું અત્યારે તમારી મદદ કરી શકતો નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો."
+        else:
+            ai_resp = "Sorry, I cannot assist you at the moment. Please try again later."
 
-    tts_audio = text_to_speech(ai_resp, lang) if req.wants_audio else None
+
+    # 5. Text-to-Speech Conversion
+    tts_audio = text_to_speech(ai_resp, target_lang) if req.wants_audio else None
 
     return {
         "text": ai_resp,
-        "language": lang,
+        "language": target_lang,
         "tts_audio": tts_audio
     }
