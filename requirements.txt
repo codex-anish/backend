@@ -1,9 +1,8 @@
 fastapi
 uvicorn
 python-multipart
-langdetect
-gtts
-SpeechRecognition
-pydantic
 google-generativeai
 python-dotenv
+pydantic
+gtts
+SpeechRecognition
