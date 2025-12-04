@@ -1,8 +1,9 @@
 fastapi
 uvicorn
-python-multipart
-google-generativeai
 python-dotenv
-pydantic
+google-generativeai
 gtts
 SpeechRecognition
+pydantic
+pydantic-settings
+starlette
