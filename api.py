@@ -10,8 +10,10 @@ import tempfile
 import speech_recognition as sr
 import re
 
+# Load environment variables from .env file
 load_dotenv()
 
+# --- Initialize FastAPI ---
 app = FastAPI()
 
 # ==== CORS ====
@@ -21,6 +23,12 @@ app.add_middleware(
 	allow_methods=["*"],
 	allow_headers=["*"],
 )
+
+# --- Health Check Endpoint (For better deployment monitoring) ---
+@app.get("/")
+def read_root():
+    """Simple endpoint to confirm the API is live."""
+    return {"status": "ok", "service": "AAROH SUJHAA Chatbot API"}
 
 # Supported Languages
 SUPPORTED_LANGUAGES = {
@@ -58,7 +66,8 @@ def text_to_speech(text, lang):
 	try:
 		lang_map = {'hi': 'hi', 'ta': 'ta', 'gu': 'gu', 'en': 'en'}
 		tts_lang = lang_map.get(lang, 'en')
-		clean_text = re.sub(r'[\*\#]', '', text)
+		# Clean text of markdown characters before TTS
+		clean_text = re.sub(r'[\*\#\[\]\(\)]', '', text) 
 		tts = gTTS(text=clean_text, lang=tts_lang)
 		buf = BytesIO()
 		tts.write_to_fp(buf)
@@ -68,16 +77,22 @@ def text_to_speech(text, lang):
 		return None
 
 # ---- STT ----
-def speech_to_text(audio_bytes, target_lang):
-	with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-		f.write(audio_bytes)
-		path = f.name
+# NOTE: The STT function relies on external libraries and temporary files, which can be
+# complex in serverless environments. Ensure all dependencies (e.g., PyAudio for sr.AudioFile) 
+# are correctly installed and configured in your deployment environment.
 
-	rec = sr.Recognizer()
+def speech_to_text(audio_bytes, target_lang):
+	# Using tempfile to write audio bytes to a file for speech_recognition
+	path = None
 	try:
+		with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+			f.write(audio_bytes)
+			path = f.name
+	
+		rec = sr.Recognizer()
 		with sr.AudioFile(path) as src:
 			audio = rec.record(src)
-
+	
 		lang_map = {
 			'hi': 'hi-IN',
 			'ta': 'ta-IN',
@@ -85,11 +100,15 @@ def speech_to_text(audio_bytes, target_lang):
 			'en': 'en-US'
 		}
 		text = rec.recognize_google(audio, language=lang_map.get(target_lang, 'en-US'))
-		os.unlink(path)
+		
 		return text
-	except:
-		os.unlink(path)
+	except Exception:
+		# Log error if necessary
 		return None
+	finally:
+		# Clean up temporary file
+		if path and os.path.exists(path):
+			os.unlink(path)
 
 # ---- AI PROMPT ----
 def build_prompt(user_query, chat_history, target_lang):
@@ -173,7 +192,7 @@ def build_prompt(user_query, chat_history, target_lang):
 			"**4. सामान्य सहायता/अन्य:**\n" + HELP_RESPONSES["Help: General assistance needed"]
 		)
 
-	# --- Tamil Responses (Add your Tamil translations here, keeping the structure) ---
+	# --- Tamil Responses ---
 	elif target_lang == 'ta':
 		HELP_RESPONSES = {
 			"Help: Application rejected, what next?":
@@ -205,7 +224,7 @@ def build_prompt(user_query, chat_history, target_lang):
 			"**4. பொது உதவி/மற்ற சிக்கல்:**\n" + HELP_RESPONSES["Help: General assistance needed"]
 		)
 	
-	# --- Gujarati Responses (Add your Gujarati translations here, keeping the structure) ---
+	# --- Gujarati Responses ---
 	elif target_lang == 'gu':
 		HELP_RESPONSES = {
 			"Help: Application rejected, what next?":
@@ -237,10 +256,10 @@ def build_prompt(user_query, chat_history, target_lang):
 			"**4. સામાન્ય સહાય/અન્ય:**\n" + HELP_RESPONSES["Help: General assistance needed"]
 		)
 	
-	# --- Check for hardcoded response first and return immediately if found ---
-	
-	# ✅ NEW MASTER QUERY CHECK
-	
+	# --- CRITICAL FIX: Check for hardcoded response first and return immediately if found ---
+	master_query = MASTER_PROBLEM_QUERIES.get(target_lang)
+	if master_query and user_query.strip().lower() == master_query.lower():
+		return MASTER_RESPONSE
 	
 	# =========================================================================
 	# (Continue with the original prompt for general queries)
@@ -395,7 +414,8 @@ Now respond carefully and truthfully in **{language_name}**, following ALL rules
 """
 
 
-
+# --- Configure Gemini Model ---
+# This assumes GOOGLE_API_KEY is correctly set in your Render environment variables
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -412,9 +432,11 @@ async def chat(req: ChatRequest):
 
 	user_query = req.message
 	target_lang = req.target_language.lower()
+	ai_resp = "" # Initialize response variable
 
-	# Voice Input
+	# --- 1. Handle Voice Input (STT) ---
 	if req.is_voice:
+		# Assuming user_query contains audio bytes when is_voice is True
 		user_query = speech_to_text(user_query, target_lang)
 		if not user_query:
 			msgs = {
@@ -423,40 +445,42 @@ async def chat(req: ChatRequest):
 				"gu": "માફ કરશો, અવાજ સમજાયો નથી。",
 				"en": "Sorry, I couldn’t understand your voice."
 			}
-			return {"text": msgs.get(target_lang, msgs["en"]), "language": target_lang}
+			ai_resp = msgs.get(target_lang, msgs["en"])
+			tts_audio = text_to_speech(ai_resp, target_lang) if req.wants_audio else None
+			return {"text": ai_resp, "language": target_lang, "tts_audio": tts_audio}
 
-	# Small Talk (ONLY IF EXACT GREETING)
+	# --- 2. Handle Small Talk ---
 	if is_small_talk(user_query):
-		resp = get_small_talk_response(target_lang)
-		audio = text_to_speech(resp, target_lang) if req.wants_audio else None
-		return {"text": resp, "language": target_lang, "tts_audio": audio}
-    
-	# Build history text
-	history_text = ""
-	for m in req.chat_history[-10:]:
-		role = "User" if m["role"] == "user" else "Assistant"
-		history_text += f"{role}: {m['content']}\n"
-
-	# IMPORTANT: Call build_prompt to get the response (or the full prompt text)
-	prompt_or_response = build_prompt(user_query, history_text, target_lang)
-
-	# If prompt_or_response is a hardcoded support response (either specific or master), use it directly
-	if user_query.startswith("Help:") :
-		ai_resp = prompt_or_response
+		ai_resp = get_small_talk_response(target_lang)
 	else:
-		# Process through the AI model
-		try:
-			ai_resp = model.generate_content(prompt_or_response).text
-		except Exception as e:
-			# print(f"Gemini API Error: {e}") # Uncomment for debugging
-			fallback = {
-				'hi': "अभी जानकारी उपलब्ध नहीं है। कृपया बाद में प्रयास करें।",
-				'ta': "தகவல் கிடைக்கவில்லை. பின்னர் முயற்சிக்கவும்。",
-				'gu': "માહિતી ઉપલબ્ધ નથી. થોડા સમય પછી પ્રયત્ન કરો。",
-				'en': "I cannot respond right now. Please try again later."
-			}
-			ai_resp = fallback.get(target_lang, fallback["en"])
+		# --- 3. Build History and Prompt ---
+		history_text = ""
+		for m in req.chat_history[-10:]:
+			role = "User" if m["role"] == "user" else "Assistant"
+			history_text += f"{role}: {m['content']}\n"
 
+		prompt_or_response = build_prompt(user_query, history_text, target_lang)
+
+		# --- 4. Decide Hardcoded Response vs. LLM Call ---
+		# Check if build_prompt returned the short, hardcoded response (which is <= 1500 characters)
+		# instead of the long system prompt (> 1500 characters)
+		if len(prompt_or_response) < 1500 and not prompt_or_response.startswith('You are **AAROH**'):
+			ai_resp = prompt_or_response
+		else:
+			# Process through the AI model
+			try:
+				ai_resp = model.generate_content(prompt_or_response).text
+			except Exception as e:
+				# print(f"Gemini API Error: {e}") # Uncomment for debugging
+				fallback = {
+					'hi': "अभी जानकारी उपलब्ध नहीं है। कृपया बाद में प्रयास करें।",
+					'ta': "தகவல் கிடைக்கவில்லை. பின்னர் முயற்சிக்கவும்。",
+					'gu': "માહિતી ઉપલબ્ધ નથી. થોડા સમય પછી પ્રયત્ન કરો。",
+					'en': "I cannot respond right now. Please try again later."
+				}
+				ai_resp = fallback.get(target_lang, fallback["en"])
+
+	# --- 5. Generate TTS and Return ---
 	tts_audio = text_to_speech(ai_resp, target_lang) if req.wants_audio else None
 
 	return {
